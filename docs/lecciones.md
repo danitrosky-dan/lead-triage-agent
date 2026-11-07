@@ -1,0 +1,2 @@
+- una evaluación tiene que poder distinguir entre “el modelo se equivocó” y “el sistema falló”.
+- Separar los errores de sistema no basta; también hay que excluirlos de las métricas, porque si no inflan la accuracy por coincidencia.

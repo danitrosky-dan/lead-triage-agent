@@ -1,0 +1,10 @@
+run,lead_id,case_type,tipo_error,decision_esperada,decision_obtenida,owner_esperado,owner_obtenido,razonamiento_agente
+1,43,cargo_ambiguo,decision+owner,calificado,revision,Luis Méndez,cola_revision,Límite de pasos alcanzado sin decisión final.
+1,45,cargo_ambiguo,decision+owner,calificado,revision,Ana Torres,cola_revision,"Lead no duplicado. Empresa encontrada en sector infraestructura, país Argentina, 650 empleados. Score ICP 80 (rango calificado). Sin embargo, existe una contradicción entre el país del lead (Argentina) y el contenido descargado (Informe: Mercado Eléctrico Colombia), lo que sugiere un error o falta de relevancia geográfica en el interés del lead."
+1,72,normal,decision,calificado,duplicado,Ana Torres,Ana Torres,"Se ejecutó buscar_duplicado y se detectó un lead existente con similitud fuzzy del 87.5%. Los datos coinciden en nombre相似 (Natalia Sánchez vs Natalia Silva), mismo email dominio (patagoniawind.com) y misma empresa (Patagonia Wind S.A.). Se registra como duplicado."
+1,78,normal,decision+owner,calificado,revision,Ana Torres,cola_revision,Límite de pasos alcanzado sin decisión final.
+1,94,normal,decision+owner,descartado,revision,,cola_revision,Límite de pasos alcanzado sin decisión final.
+2,72,normal,decision,calificado,duplicado,Ana Torres,Ana Torres,"Se ejecutó buscar_duplicado y se encontró un contacto existente en el CRM (ID 3: Natalia Silva) con email similar (fuzzy match 87.5%), misma empresa (Patagonia Wind S.A.) y mismo país (Argentina). Por lo tanto, se registra como duplicado."
+2,94,normal,decision+owner,descartado,revision,,cola_revision,Límite de pasos alcanzado sin decisión final.
+3,72,normal,decision,calificado,duplicado,Ana Torres,Ana Torres,"Se ejecutó buscar_duplicado y se detectó como duplicado fuzzy (similitud 87.5%) con el lead ID 3 (Natalia Silva, mismo email domain patagoniawind.com, misma empresa Patagonia Wind S.A., mismo país Argentina). Se registra como duplicado sin continuar con enriquecimiento o score."
+3,80,normal,decision+owner,calificado,revision,Carla Souza,cola_revision,Límite de pasos alcanzado sin decisión final.
