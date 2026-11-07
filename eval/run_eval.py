@@ -28,11 +28,17 @@ args = parser.parse_args()
 # MODEL_ID debe setearse ANTES de importar loop (variable de módulo en import time)
 os.environ["MODEL_ID"] = args.model
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT     = Path(__file__).resolve().parent.parent
+EVAL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(EVAL_DIR))
 
 from src.agent.loop import TEMPERATURE, TOP_P, run_agent   # noqa: E402
 from src.agent.tools import DB_PATH                        # noqa: E402
+from eval_helpers import compute_metrics, preflight_check  # noqa: E402
+
+# ── Preflight: verificar que el modelo existe antes de procesar nada ──────────
+preflight_check(args.model, os.environ["OMLX_BASE_URL"], os.environ["OMLX_API_KEY"])
 
 # ── Rutas ─────────────────────────────────────────────────────────────────────
 EVAL_DIR    = ROOT / "eval"
@@ -140,50 +146,6 @@ def run_once(run_num: int, total_runs: int) -> list[dict]:
     return records
 
 
-# ── Función para calcular métricas de un run ──────────────────────────────────
-def compute_metrics(records: list[dict]) -> dict:
-    n         = len(records)
-    n_correct = sum(r["correct_decision"] for r in records)
-    n_owner   = sum(r["correct_owner"]    for r in records)
-
-    true_dups = {r["lead_id"] for r in records if r["decision_gt"]    == "duplicado"}
-    pred_dups = {r["lead_id"] for r in records if r["decision_agent"] == "duplicado"}
-    tp = len(true_dups & pred_dups)
-    fp = len(pred_dups - true_dups)
-    fn = len(true_dups - pred_dups)
-    dup_prec = tp / (tp + fp) if (tp + fp) else 0.0
-    dup_rec  = tp / (tp + fn) if (tp + fn) else 0.0
-    dup_f1   = 2 * dup_prec * dup_rec / (dup_prec + dup_rec) if (dup_prec + dup_rec) else 0.0
-
-    n_rev     = sum(r["decision_agent"] == "revision" for r in records)
-    cons      = sum(r["consistency_blocks"] for r in records)
-    avg_steps = sum(r["n_steps"]   for r in records) / n
-    avg_lat   = sum(r["elapsed_s"] for r in records) / n
-    tot_lat   = sum(r["elapsed_s"] for r in records)
-    errors    = [r for r in records if r["tipo_error"] is not None]
-
-    n_error_sistema = sum(r["error_sistema"] for r in records)
-    n_step_limit    = sum(r["step_limit"]    for r in records)
-
-    return {
-        "n":               n,
-        "acc_decision":    n_correct / n,
-        "acc_owner":       n_owner   / n,
-        "dup_precision":   dup_prec,
-        "dup_recall":      dup_rec,
-        "dup_f1":          dup_f1,
-        "escalation_rate": n_rev / n,
-        "consistency":     cons,
-        "avg_steps":       avg_steps,
-        "avg_latency":     avg_lat,
-        "total_elapsed":   tot_lat,
-        "n_errors":        len(errors),
-        "n_error_sistema": n_error_sistema,
-        "n_step_limit":    n_step_limit,
-        "tp": tp, "fp": fp, "fn": fn,
-    }
-
-
 # ── Ejecutar N runs ───────────────────────────────────────────────────────────
 print(f"\nEvaluando  set={args.set!r}  modelo={args.model!r}  runs={args.runs}  "
       f"({len(lead_ids)} leads × {args.runs})\n")
@@ -212,18 +174,20 @@ def fmt_agg(key: str, as_pct=False, decimals=1) -> str:
     return f"{mean:.{decimals}f}  [{lo:.{decimals}f}, {hi:.{decimals}f}]"
 
 
-# Confusion matrix agregada (suma de todos los runs)
-confusion: dict[str, dict[str, int]] = {d: {d2: 0 for d2 in DECISIONS} for d in DECISIONS}
+# Confusion matrix agregada — columnas incluyen error_sistema
+PRED_COLS = DECISIONS + ["error_sistema"]
+confusion: dict[str, dict[str, int]] = {d: {p: 0 for p in PRED_COLS} for d in DECISIONS}
 for r in flat:
     real = r["decision_gt"]
-    pred = r["decision_agent"] if r["decision_agent"] in DECISIONS else "revision"
+    pred = r["decision_agent"] if r["decision_agent"] in PRED_COLS else "revision"
     confusion[real][pred] += 1
 
-# Accuracy por case_type (media ponderada sobre todos los runs)
+# Accuracy por case_type — solo leads válidos (excluye error_sistema)
 by_case_agg: dict[str, dict] = defaultdict(lambda: {"n": 0, "correct": 0})
 for r in flat:
-    by_case_agg[r["case_type"]]["n"]       += 1
-    by_case_agg[r["case_type"]]["correct"] += r["correct_decision"]
+    if not r.get("error_sistema", False):
+        by_case_agg[r["case_type"]]["n"]       += 1
+        by_case_agg[r["case_type"]]["correct"] += r["correct_decision"]
 
 errors_all   = [r for r in flat if r["tipo_error"] is not None]
 dec_errors   = [r for r in errors_all if "decision" in r["tipo_error"]]
@@ -239,6 +203,18 @@ stem       = f"{args.set}_{safe_model}_{today}{run_tag}"
 report_path = RESULTS_DIR / f"{stem}.md"
 errors_path = RESULTS_DIR / f"{stem}_errors.csv"
 
+invalido = any(
+    m["n_error_sistema"] / m["n"] > 0.1
+    for m in per_run if m["n"] > 0
+)
+# Promedio de n_valid para etiqueta de accuracy
+mean_valid = sum(m["n_valid"] for m in per_run) / len(per_run)
+valid_label = (
+    f"{int(mean_valid)} válidos de {per_run[0]['n']}"
+    if mean_valid == per_run[0]["n_valid"]
+    else f"~{mean_valid:.0f} válidos de {per_run[0]['n']}"
+)
+
 md = []
 runs_label = f"{args.runs} run{'s' if args.runs > 1 else ''}"
 md += [
@@ -247,13 +223,21 @@ md += [
     f"**Set:** {args.set}  |  **Modelo:** `{args.model}`  |  **Fecha:** {today}  |  **Runs:** {args.runs}",
     f"**Temperatura:** {TEMPERATURE}  |  **top_p:** {TOP_P}",
     "",
+]
+if invalido:
+    md += [
+        "> **[INVALIDO]** Mas del 10 % de los leads de al menos un run son errores "
+        "de sistema. Los resultados no son representativos.",
+        "",
+    ]
+md += [
     f"## Resumen ejecutivo  _{runs_label}_",
     "",
     "| Métrica | Valor |" if args.runs == 1 else "| Métrica | Media  [min, max] |",
     "|---|---|",
-    f"| Leads por run | {len(lead_ids)} |",
-    f"| Accuracy de decisión | {fmt_agg('acc_decision', as_pct=True)} |",
-    f"| Accuracy de owner | {fmt_agg('acc_owner', as_pct=True)} |",
+    f"| Leads por run | {per_run[0]['n']} |",
+    f"| Accuracy de decisión  ({valid_label}) | {fmt_agg('acc_decision', as_pct=True)} |",
+    f"| Accuracy de owner  ({valid_label}) | {fmt_agg('acc_owner', as_pct=True)} |",
     f"| Tasa de escalamiento (revision) | {fmt_agg('escalation_rate', as_pct=True)} |",
     f"| Guardia de consistencia activada | {fmt_agg('consistency', decimals=1)} |",
     f"| Fallbacks por límite de pasos | {fmt_agg('n_step_limit', decimals=1)} |",
@@ -296,11 +280,11 @@ md += [
     "Filas = decisión esperada · Columnas = decisión del agente",
     "",
 ]
-header = ["**real \\ pred**"] + [f"**{d}**" for d in DECISIONS]
+header = ["**real \\ pred**"] + [f"**{d}**" for d in PRED_COLS]
 md.append("| " + " | ".join(header) + " |")
-md.append("|" + "|".join(["---"] * (len(DECISIONS) + 1)) + "|")
+md.append("|" + "|".join(["---"] * (len(PRED_COLS) + 1)) + "|")
 for d_real in DECISIONS:
-    cells = [f"**{d_real}**"] + [str(confusion[d_real][d_pred]) for d_pred in DECISIONS]
+    cells = [f"**{d_real}**"] + [str(confusion[d_real][p]) for p in PRED_COLS]
     md.append("| " + " | ".join(cells) + " |")
 
 tp_all = sum(m["tp"] for m in per_run)
@@ -378,10 +362,11 @@ if errors_all:
 # ── Resumen en consola ────────────────────────────────────────────────────────
 SEP = "═" * 62
 print(f"\n{SEP}")
-print(f"  {args.set.upper()} / {args.model}  ({runs_label})")
+invalido_tag = "  [INVALIDO]" if invalido else ""
+print(f"  {args.set.upper()} / {args.model}  ({runs_label}){invalido_tag}")
 print(SEP)
-print(f"  Accuracy decisión  : {fmt_agg('acc_decision', as_pct=True)}")
-print(f"  Accuracy owner     : {fmt_agg('acc_owner', as_pct=True)}")
+print(f"  Accuracy decisión  : {fmt_agg('acc_decision', as_pct=True)}  ({valid_label})")
+print(f"  Accuracy owner     : {fmt_agg('acc_owner', as_pct=True)}  ({valid_label})")
 print(f"  Duplicados P/R/F1  : {p_all*100:.0f}% / {r_all*100:.0f}% / {f1_all*100:.0f}%")
 print(f"  Escalamiento       : {fmt_agg('escalation_rate', as_pct=True)}")
 print(f"  Guardia activada   : {fmt_agg('consistency', decimals=1)}")
