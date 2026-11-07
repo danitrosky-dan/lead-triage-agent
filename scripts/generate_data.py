@@ -6,8 +6,19 @@ Seed = 42. Escribe data/crm.db y eval/ground_truth.csv.
 import csv
 import random
 import sqlite3
+import sys
 from collections import Counter
 from pathlib import Path
+
+# Permite importar src.agent.rules cuando el script se ejecuta directamente
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.agent.rules import (  # noqa: E402
+    _ACCENT, SECTORES_OBJETIVO, PAISES_OBJETIVO, EMPLEADOS_MINIMO,
+    CARGOS_DECISORES, CARGOS_EXCLUYENTES_KW,
+    UMBRAL_CALIFICADO, UMBRAL_REVISION, ROUTING, FALLBACK_OWNER,
+    calc_score, calc_decision_owner,
+)
 
 SEED    = 42
 DB_PATH = Path("data/crm.db")
@@ -17,76 +28,6 @@ rng = random.Random(SEED)
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 GT_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-# ── Reglas (business_rules.yaml) ──────────────────────────────────────────────
-SECTORES_OBJETIVO     = {"mineria", "energia", "infraestructura"}
-PAISES_OBJETIVO       = {"Chile", "Peru", "Mexico", "Colombia", "Brasil", "Argentina"}
-EMPLEADOS_MINIMO      = 200
-CARGOS_DECISORES      = {
-    "gerente",   "gerenta",   "gerentes",   "gerentas",
-    "director",  "directora", "directores", "directoras",
-    "vp",        "head",
-    "jefe",      "jefa",      "jefes",      "jefas",
-    "ceo",       "cfo",       "coo",
-}
-CRITERIOS_EXCLUYENTES  = {"sector"}   # sector fuera de objetivo → descartado directo
-CARGOS_EXCLUYENTES_KW  = {
-    "estudiante", "estudiantes",
-    "practicante", "practicantes",
-    "proveedor", "proveedora", "proveedores", "proveedoras",
-    "alumno", "alumna", "alumnos", "alumnas",
-}
-UMBRAL_CALIFICADO      = 70
-UMBRAL_REVISION        = 50
-ROUTING = {
-    "Chile": "Ana Torres",    "Argentina": "Ana Torres",
-    "Peru":  "Luis Méndez",   "Colombia":  "Luis Méndez",
-    "Brasil": "Carla Souza",
-    "Mexico": "Jorge Ramírez",
-}
-FALLBACK_OWNER = "cola_revision"
-
-# ── Scoring / decisión (determinísticos) ──────────────────────────────────────
-def _cargo_tokens(cargo):
-    """Tokeniza el cargo: minúsculas, sin tildes, palabras completas.
-    Evita tanto falsos positivos por substring (coo∈coordinador)
-    como falsos negativos por acento (Gérente ≠ gerente)."""
-    return set((cargo or "").lower().translate(_ACCENT).split())
-
-def calc_score(sector, pais, empleados, cargo):
-    s = 0
-    if sector    and sector.lower() in SECTORES_OBJETIVO: s += 40
-    if pais      and pais in PAISES_OBJETIVO:             s += 20
-    if empleados and empleados >= EMPLEADOS_MINIMO:       s += 20
-    # Intersección de tokens: evita que "coo" coincida con "coordinador"
-    if _cargo_tokens(cargo) & CARGOS_DECISORES:           s += 20
-    return s
-
-def calc_decision_owner(score, pais, sector, cargo, case, crm_owner=None):
-    """
-    Aplica las reglas del YAML en orden de prioridad:
-    1. duplicado            → 'duplicado', owner del contacto existente
-    2. empresa_desconocida / datos_contradictorios → 'revision'
-    3. cargo excluyente     → 'descartado' (estudiante, practicante, proveedor, alumno)
-    4. sector excluyente    → 'descartado'
-    5. scoring normal       (calificado_requiere_cargo_decisor: false)
-    """
-    if case in ("duplicado_exacto", "duplicado_fuzzy"):
-        return "duplicado", crm_owner or ""
-    if case == "empresa_desconocida":
-        return "revision", FALLBACK_OWNER
-    if case == "datos_contradictorios":
-        return "revision", FALLBACK_OWNER
-    # Token-based para evitar falsos positivos (e.g. "proveedor" en substring)
-    if _cargo_tokens(cargo) & CARGOS_EXCLUYENTES_KW:
-        return "descartado", ""
-    if sector is not None and sector.lower() not in SECTORES_OBJETIVO:
-        return "descartado", ""
-    if score >= UMBRAL_CALIFICADO:
-        return "calificado", ROUTING.get(pais, FALLBACK_OWNER)
-    if score >= UMBRAL_REVISION:
-        return "revision", FALLBACK_OWNER
-    return "descartado", ""
 
 # ── Vocabulario ───────────────────────────────────────────────────────────────
 NOMBRES = [
