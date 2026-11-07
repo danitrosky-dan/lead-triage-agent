@@ -23,3 +23,25 @@ asignar owner (SDR), redactar primer correo, o escalar a humano si hay dudas.
 
 ## Estructura
 src/agent/ (loop, tools), data/, eval/, app/ (Streamlit)
+
+## Decisiones de diseño (no revertir)
+- El LLM orquesta; los datos se mueven por código. Las herramientas leen
+  de la DB por lead_id en vez de recibir valores copiados por el LLM.
+- El owner es determinístico: lo calcula registrar_decision, no el LLM.
+- Guardia de consistencia en registrar_decision: rechaza decisiones u owners
+  que contradigan los resultados de las herramientas.
+- "revision" requiere un motivo de una lista cerrada; el contenido descargado
+  no es criterio.
+- Evaluación: dev (30) para iterar, test (70) una sola vez con el prompt congelado.
+- Temperatura explícita 0.6 / top_p 0.95 (Qwen3 en modo pensamiento); no usar 0.
+
+## Estado actual
+- Fases 0-3 completas: datos sintéticos, herramientas, loop con guardia,
+  evaluación dev/test con --runs, errores modelo vs sistema separados.
+- Dev --runs 1: 100% decisión, 100% owner.
+- Próximo: dev --runs 3 → tag prompt-v1 → test --runs 3 (una sola vez).
+- Después: Fase 4 (borrador de correo + dashboard Streamlit).
+
+## Comandos
+- Tests: pytest -v
+- Eval: python eval/run_eval.py --set dev|test --runs 3 --model <id>
