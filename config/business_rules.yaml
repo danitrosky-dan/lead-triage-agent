@@ -1,0 +1,41 @@
+icp:
+  sectores_objetivo: [mineria, energia, infraestructura]
+  paises_objetivo: [Chile, Peru, Mexico, Colombia, Brasil, Argentina]
+  empleados_minimo: 200
+  cargos_decisores: [gerente, gerenta, gerentes, gerentas,
+                     director, directora, directores, directoras,
+                     vp, head,
+                     jefe, jefa, jefes, jefas,
+                     ceo, cfo, coo]
+  puntaje:          # ajusta los pesos
+    sector: 40
+    pais: 20
+    tamano: 20
+    cargo: 20
+  umbral_calificado: 70     # >= esto: calificado
+  umbral_revision: 50       # entre revision y calificado: escalar a humano
+
+routing:
+  # SDRs ficticios y su cobertura
+  - sdr: "Ana Torres"
+    paises: [Chile, Argentina]
+  - sdr: "Luis Méndez"
+    paises: [Peru, Colombia]
+  - sdr: "Carla Souza"
+    paises: [Brasil]
+  - sdr: "Jorge Ramírez"
+    paises: [Mexico]
+  fallback: "cola_revision"  # país sin SDR asignado
+
+  decisiones:
+  duplicado: asignar_owner_existente    # no se recalifica ni reasigna
+  empresa_desconocida: revision
+  datos_contradictorios: revision
+  owner_en_revision: cola_revision
+
+  criterios_excluyentes: [sector]   # si falla, descartado sin importar el score
+  cargos_excluyentes: [estudiante, estudiantes,
+                      practicante, practicantes,
+                      proveedor, proveedora, proveedores, proveedoras,
+                      alumno, alumna, alumnos, alumnas]
+  calificado_requiere_cargo_decisor: false     # true si eliges la opción (b)

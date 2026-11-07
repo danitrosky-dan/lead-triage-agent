@@ -1,0 +1,101 @@
+lead_id,case_type,es_duplicado,score_icp,decision,owner_esperado
+1,duplicado_exacto,True,100,duplicado,Ana Torres
+2,duplicado_exacto,True,100,duplicado,Luis Méndez
+3,duplicado_exacto,True,100,duplicado,Luis Méndez
+4,duplicado_exacto,True,100,duplicado,Ana Torres
+5,duplicado_exacto,True,100,duplicado,Ana Torres
+6,duplicado_exacto,True,100,duplicado,Carla Souza
+7,duplicado_exacto,True,100,duplicado,Luis Méndez
+8,duplicado_exacto,True,100,duplicado,Ana Torres
+9,duplicado_exacto,True,100,duplicado,Ana Torres
+10,duplicado_exacto,True,100,duplicado,Carla Souza
+11,duplicado_fuzzy,True,100,duplicado,Carla Souza
+12,duplicado_fuzzy,True,100,duplicado,Carla Souza
+13,duplicado_fuzzy,True,100,duplicado,Luis Méndez
+14,duplicado_fuzzy,True,100,duplicado,Luis Méndez
+15,duplicado_fuzzy,True,100,duplicado,Luis Méndez
+16,duplicado_fuzzy,True,100,duplicado,Luis Méndez
+17,duplicado_fuzzy,True,100,duplicado,Jorge Ramírez
+18,duplicado_fuzzy,True,100,duplicado,Luis Méndez
+19,fuera_icp,False,60,descartado,
+20,fuera_icp,False,60,descartado,
+21,fuera_icp,False,60,descartado,
+22,fuera_icp,False,60,descartado,
+23,fuera_icp,False,60,descartado,
+24,fuera_icp,False,40,descartado,
+25,fuera_icp,False,60,revision,cola_revision
+26,fuera_icp,False,60,revision,cola_revision
+27,fuera_icp,False,60,revision,cola_revision
+28,fuera_icp,False,60,revision,cola_revision
+29,fuera_icp,False,60,revision,cola_revision
+30,fuera_icp,False,60,revision,cola_revision
+31,empresa_desconocida,False,40,revision,cola_revision
+32,empresa_desconocida,False,20,revision,cola_revision
+33,empresa_desconocida,False,40,revision,cola_revision
+34,empresa_desconocida,False,40,revision,cola_revision
+35,empresa_desconocida,False,40,revision,cola_revision
+36,empresa_desconocida,False,40,revision,cola_revision
+37,empresa_desconocida,False,40,revision,cola_revision
+38,empresa_desconocida,False,40,revision,cola_revision
+39,cargo_ambiguo,False,80,calificado,Luis Méndez
+40,cargo_ambiguo,False,80,calificado,Carla Souza
+41,cargo_ambiguo,False,80,calificado,Ana Torres
+42,cargo_ambiguo,False,80,calificado,Ana Torres
+43,cargo_ambiguo,False,80,calificado,Luis Méndez
+44,cargo_ambiguo,False,80,calificado,Ana Torres
+45,cargo_ambiguo,False,80,calificado,Ana Torres
+46,cargo_ambiguo,False,80,calificado,Carla Souza
+47,datos_contradictorios,False,100,revision,cola_revision
+48,datos_contradictorios,False,100,revision,cola_revision
+49,datos_contradictorios,False,100,revision,cola_revision
+50,datos_contradictorios,False,100,revision,cola_revision
+51,datos_contradictorios,False,100,revision,cola_revision
+52,datos_contradictorios,False,100,revision,cola_revision
+53,datos_contradictorios,False,100,revision,cola_revision
+54,normal,False,100,calificado,Ana Torres
+55,normal,False,100,calificado,Ana Torres
+56,normal,False,100,calificado,Ana Torres
+57,normal,False,100,calificado,Ana Torres
+58,normal,False,100,calificado,Luis Méndez
+59,normal,False,100,calificado,Ana Torres
+60,normal,False,100,calificado,Carla Souza
+61,normal,False,100,calificado,Luis Méndez
+62,normal,False,100,calificado,Luis Méndez
+63,normal,False,100,calificado,Ana Torres
+64,normal,False,100,calificado,Luis Méndez
+65,normal,False,100,calificado,Ana Torres
+66,normal,False,100,calificado,Carla Souza
+67,normal,False,100,calificado,Ana Torres
+68,normal,False,100,calificado,Luis Méndez
+69,normal,False,100,calificado,Luis Méndez
+70,normal,False,100,calificado,Luis Méndez
+71,normal,False,100,calificado,Carla Souza
+72,normal,False,100,calificado,Ana Torres
+73,normal,False,100,calificado,Ana Torres
+74,normal,False,80,calificado,Luis Méndez
+75,normal,False,80,calificado,Carla Souza
+76,normal,False,80,calificado,Luis Méndez
+77,normal,False,80,calificado,Luis Méndez
+78,normal,False,80,calificado,Ana Torres
+79,normal,False,80,calificado,Ana Torres
+80,normal,False,80,calificado,Carla Souza
+81,normal,False,80,calificado,Ana Torres
+82,normal,False,60,revision,cola_revision
+83,normal,False,60,revision,cola_revision
+84,normal,False,60,revision,cola_revision
+85,normal,False,60,revision,cola_revision
+86,normal,False,40,descartado,
+87,normal,False,40,descartado,
+88,normal,False,60,descartado,
+89,normal,False,60,descartado,
+90,normal,False,40,descartado,
+91,normal,False,40,descartado,
+92,normal,False,40,descartado,
+93,normal,False,60,descartado,
+94,normal,False,60,descartado,
+95,normal,False,40,descartado,
+96,normal,False,60,descartado,
+97,normal,False,40,descartado,
+98,normal,False,40,descartado,
+99,normal,False,60,descartado,
+100,normal,False,40,descartado,
