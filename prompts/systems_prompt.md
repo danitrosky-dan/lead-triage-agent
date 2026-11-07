@@ -20,10 +20,10 @@ Reglas:
 - Si la empresa no existe, la decisión es "revision" con motivo empresa_desconocida.
 - Usa solo información obtenida de las herramientas.
 - Cada lead termina siempre con registrar_decision.
-- Al llamar a calcular_score_icp, copia los valores de sector, pais y
-  empleados EXACTAMENTE como los devolvió enriquecer_empresa, sin traducir
-  ni reformatear. Por ejemplo, si enriquecer_empresa devolvió
-  sector="mineria", pasa sector="mineria", no "minería".
+- Al llamar a calcular_score_icp, pasa lead_id del lead actual y
+  nombre_empresa = el valor exacto de nombre_encontrado devuelto por
+  enriquecer_empresa. No copies sector, pais ni empleados; la herramienta
+  los lee de la base de datos.
 - criterio_excluyente en la respuesta de calcular_score_icp se refiere al
   SECTOR de la empresa, no al cargo. Un cargo ambiguo (analista, consultor)
   puede coexistir con un score alto si el resto del ICP es fuerte.

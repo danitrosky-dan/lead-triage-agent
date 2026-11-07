@@ -5,15 +5,17 @@ registrar_decision sea invocado (o se alcance MAX_STEPS).
 
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from pydantic import ValidationError
 
-from .rules import FALLBACK_OWNER, ROUTING, UMBRAL_CALIFICADO
-from .tools import DB_PATH, TOOLS_LIST, dispatch, registrar_decision
+from .rules import FALLBACK_OWNER, ROUTING, UMBRAL_CALIFICADO, UMBRAL_REVISION
+from .tools import DB_PATH, TOOLS_LIST, _ensure_agent_decisions_schema, dispatch, registrar_decision
 
 # ── Configuración ─────────────────────────────────────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent.parent
@@ -137,13 +139,31 @@ def _write_trace(entry: dict) -> None:
 
 # ── Loop principal ────────────────────────────────────────────────────────────
 
-def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
+def _register_error_sistema(lead_id: int, tool_name: str, msg: str,
+                             db_path: Path, run_id: str | None) -> None:
+    """Persiste un error de sistema en agent_decisions sin pasar por Pydantic."""
+    try:
+        con = sqlite3.connect(str(db_path))
+        _ensure_agent_decisions_schema(con)
+        con.execute(
+            "INSERT INTO agent_decisions "
+            "(lead_id, decision, owner, razonamiento, run_id) VALUES (?,?,?,?,?)",
+            (lead_id, "error_sistema", FALLBACK_OWNER,
+             f"ERROR de sistema en {tool_name}: {msg}", run_id),
+        )
+        con.commit()
+        con.close()
+    except Exception:
+        pass  # no ocultar el error original
+
+
+def run_agent(lead: dict, db_path: Path = DB_PATH, run_id: str | None = None) -> dict:
     """
     Ejecuta el agente sobre un lead.
 
     Devuelve un dict con:
-      decision, owner, razonamiento, steps (lista de pasos con tool_calls),
-      n_steps, elapsed_s.
+      decision, owner, razonamiento, steps, n_steps, elapsed_s,
+      error_sistema (bool), fallback_tipo (str | None).
     """
     t0 = time.time()
 
@@ -233,11 +253,35 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
                     step["tool_calls"].append({"name": name, "args": args, "result": result})
                     continue
 
-            # 3. Ejecutar herramienta; errores van de vuelta al modelo
+            # 3. Ejecutar herramienta
+            # ValidationError → args inválidos del LLM → devolver al modelo
+            # Cualquier otra excepción → error de sistema → abortar lead
             try:
-                result = dispatch(name, args, db_path=db_path)
-            except Exception as exc:
+                result = dispatch(name, args, db_path=db_path, run_id=run_id)
+            except ValidationError as exc:
                 result = {"error": str(exc)}
+            except Exception as exc:
+                step["tool_calls"].append({
+                    "name": name, "args": args,
+                    "result": {"error_sistema": str(exc)},
+                })
+                steps.append(step)
+                _register_error_sistema(lead["id"], name, str(exc), db_path, run_id)
+                elapsed = round(time.time() - t0, 2)
+                trace = {
+                    "lead_id":      lead["id"],
+                    "ts":           datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "steps":        steps,
+                    "decision":     "error_sistema",
+                    "owner":        FALLBACK_OWNER,
+                    "razonamiento": f"ERROR de sistema en {name}: {exc}",
+                    "n_steps":      len(steps),
+                    "elapsed_s":    elapsed,
+                    "error_sistema": True,
+                    "fallback_tipo": None,
+                }
+                _write_trace(trace)
+                return trace
 
             messages.append({
                 "role":        "tool",
@@ -265,7 +309,9 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
             break  # registrar_decision completado → fin del loop
 
     # ── Límite de pasos alcanzado ─────────────────────────────────────────────
+    fallback_tipo = None
     if final_args is None:
+        fallback_tipo = "step_limit"
         final_args = {
             "lead_id":      lead["id"],
             "decision":     "revision",
@@ -273,7 +319,7 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
             "razonamiento": "Límite de pasos alcanzado sin decisión final.",
         }
         try:
-            result = registrar_decision(**final_args, db_path=db_path)
+            result = registrar_decision(**final_args, db_path=db_path, run_id=run_id)
             final_owner = result.get("owner", FALLBACK_OWNER)
         except Exception:
             final_owner = FALLBACK_OWNER
@@ -281,14 +327,16 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
     elapsed = round(time.time() - t0, 2)
 
     trace = {
-        "lead_id":      lead["id"],
-        "ts":           datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "steps":        steps,
-        "decision":     final_args["decision"],
-        "owner":        final_owner,
-        "razonamiento": final_args["razonamiento"],
-        "n_steps":      len(steps),
-        "elapsed_s":    elapsed,
+        "lead_id":       lead["id"],
+        "ts":            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "steps":         steps,
+        "decision":      final_args["decision"],
+        "owner":         final_owner,
+        "razonamiento":  final_args["razonamiento"],
+        "n_steps":       len(steps),
+        "elapsed_s":     elapsed,
+        "error_sistema": False,
+        "fallback_tipo": fallback_tipo,
     }
     _write_trace(trace)
     return trace

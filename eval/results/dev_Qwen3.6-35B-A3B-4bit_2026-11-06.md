@@ -1,19 +1,22 @@
 # Evaluación del agente
 
-**Set:** dev  |  **Modelo:** `Qwen3.6-35B-A3B-4bit`  |  **Fecha:** 2026-11-06
+**Set:** dev  |  **Modelo:** `Qwen3.6-35B-A3B-4bit`  |  **Fecha:** 2026-11-06  |  **Runs:** 1
+**Temperatura:** 0.6  |  **top_p:** 0.95
 
-## Resumen ejecutivo
+## Resumen ejecutivo  _1 run_
 
 | Métrica | Valor |
 |---|---|
-| Leads evaluados | 30 |
-| Accuracy de decisión | 96.7% (29/30) |
-| Accuracy de owner | 96.7% (29/30) |
-| Tasa de escalamiento (revision) | 26.7% |
-| Guardia de consistencia activada | 7 veces |
-| Pasos promedio | 4.70 |
-| Latencia promedio | 15.6 s/lead |
-| Latencia total | 467 s (7.8 min) |
+| Leads por run | 30 |
+| Accuracy de decisión | 100.0% |
+| Accuracy de owner | 100.0% |
+| Tasa de escalamiento (revision) | 23.3% |
+| Guardia de consistencia activada | 0.0 |
+| Fallbacks por límite de pasos | 0.0 |
+| Errores de sistema | 0.0 |
+| Pasos promedio | 3.47 |
+| Latencia promedio | 13.0 s/lead |
+| Errores por run | 0.0 |
 
 ## Accuracy por case\_type
 
@@ -25,15 +28,15 @@
 | duplicado_fuzzy | 2 | 2 | 100.0% |
 | empresa_desconocida | 2 | 2 | 100.0% |
 | fuera_icp | 4 | 4 | 100.0% |
-| normal | 14 | 13 | 92.9% |
+| normal | 14 | 14 | 100.0% |
 
-## Matriz de confusión
+## Matriz de confusión  _(agregada)_
 
 Filas = decisión esperada · Columnas = decisión del agente
 
 | **real \ pred** | **calificado** | **revision** | **descartado** | **duplicado** |
 |---|---|---|---|---|
-| **calificado** | 11 | 1 | 0 | 0 |
+| **calificado** | 12 | 0 | 0 | 0 |
 | **revision** | 0 | 7 | 0 | 0 |
 | **descartado** | 0 | 0 | 6 | 0 |
 | **duplicado** | 0 | 0 | 0 | 5 |
@@ -49,18 +52,6 @@ Filas = decisión esperada · Columnas = decisión del agente
 | Recall | 100.0% |
 | F1 | 100.0% |
 
-## Errores (1 leads)
+## Errores (0 en total)
 
-Ver `dev_Qwen3.6-35B-A3B-4bit_2026-11-06_errors.csv` para el detalle completo.
-
-### Errores de decisión (1)
-
-| lead\_id | case\_type | esperado | obtenido | razonamiento del agente |
-|---|---|---|---|---|
-| 57 | normal | calificado | revision | Score ICP 100 (mineria/Chile/2500empleados/Directora Op.), pero descargó Informe Mercado Eléctrico C… |
-
-### Errores de owner (1)  _(decisión correcta)_
-
-| lead\_id | case\_type | decisión | owner esperado | owner obtenido |
-|---|---|---|---|---|
-| 57 | normal | revision | Ana Torres | cola_revision |
+*Sin errores.*

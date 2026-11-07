@@ -176,13 +176,37 @@ ENRIQUECER_EMPRESA_SCHEMA = {
 # ── 3. calcular_score_icp ────────────────────────────────────────────────────
 
 def calcular_score_icp(
-    sector: str,
-    pais: str,
-    empleados: int,
-    cargo: str,
+    lead_id: int,
+    nombre_empresa: str,
+    db_path: Path = DB_PATH,
 ) -> dict:
-    """Calcula el score ICP, el desglose por dimensión y los criterios excluyentes."""
-    empleados = int(empleados) if empleados is not None else 0
+    """
+    Lee cargo desde inbound_leads y datos de empresa desde companies,
+    luego calcula el score ICP. El LLM pasa solo lead_id y el nombre_encontrado
+    de enriquecer_empresa; los valores numéricos los lee el código, no el LLM.
+    """
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        lead_row = con.execute(
+            "SELECT cargo FROM inbound_leads WHERE id=?", (lead_id,)
+        ).fetchone()
+        if lead_row is None:
+            return {"error": f"lead_id={lead_id} no encontrado en inbound_leads"}
+
+        comp_row = con.execute(
+            "SELECT sector, pais, empleados FROM companies WHERE nombre=?",
+            (nombre_empresa,),
+        ).fetchone()
+        if comp_row is None:
+            return {"error": f"empresa '{nombre_empresa}' no encontrada en companies"}
+    finally:
+        con.close()
+
+    cargo     = lead_row["cargo"]
+    sector    = comp_row["sector"]
+    pais      = comp_row["pais"]
+    empleados = int(comp_row["empleados"] or 0)
 
     sector_norm = sector.lower().translate(_ACCENT) if sector else ""
     score = calc_score(sector, pais, empleados, cargo)
@@ -192,11 +216,9 @@ def calcular_score_icp(
         "tamano": 20 if empleados >= EMPLEADOS_MINIMO else 0,
         "cargo":  20 if _cargo_tokens(cargo) & CARGOS_DECISORES else 0,
     }
-    cargo_excluyente     = bool(_cargo_tokens(cargo) & CARGOS_EXCLUYENTES_KW)
-    criterio_excluyente  = (
-        "sector"
-        if sector and sector_norm not in SECTORES_OBJETIVO
-        else None
+    cargo_excluyente    = bool(_cargo_tokens(cargo) & CARGOS_EXCLUYENTES_KW)
+    criterio_excluyente = (
+        "sector" if sector and sector_norm not in SECTORES_OBJETIVO else None
     )
     return {
         "score":               score,
@@ -212,17 +234,24 @@ CALCULAR_SCORE_ICP_SCHEMA = {
         "name": "calcular_score_icp",
         "description": (
             "Calcula el score ICP (0-100) del lead y el desglose por dimensión "
-            "(sector, país, tamaño, cargo). También informa si hay criterios excluyentes activos."
+            "(sector, país, tamaño, cargo). Lee los datos desde la DB; "
+            "no recibe sector, país ni empleados directamente."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "sector":    {"type": "string",  "description": "Sector de la empresa"},
-                "pais":      {"type": "string",  "description": "País de la empresa"},
-                "empleados": {"type": "integer", "description": "Número de empleados"},
-                "cargo":     {"type": "string",  "description": "Cargo del lead"},
+                "lead_id": {
+                    "type": "integer",
+                    "description": "ID del lead que se está procesando",
+                },
+                "nombre_empresa": {
+                    "type": "string",
+                    "description": (
+                        "Valor exacto de nombre_encontrado devuelto por enriquecer_empresa"
+                    ),
+                },
             },
-            "required": ["sector", "pais", "empleados", "cargo"],
+            "required": ["lead_id", "nombre_empresa"],
         },
     },
 }
@@ -312,25 +341,8 @@ def _compute_owner(lead_id: int, decision: str, db_path: Path) -> str:
     return FALLBACK_OWNER
 
 
-def registrar_decision(
-    lead_id: int,
-    decision: str,
-    razonamiento: str,
-    motivo: Optional[str] = None,
-    evidencia: Optional[str] = None,
-    db_path: Path = DB_PATH,
-) -> dict:
-    """
-    Valida con Pydantic, calcula el owner internamente y persiste en agent_decisions.
-    El LLM no pasa el owner; es determinístico según decisión + datos en DB.
-    """
-    record = _DecisionRecord(
-        lead_id=lead_id, decision=decision, razonamiento=razonamiento,
-        motivo=motivo, evidencia=evidencia,
-    )
-    owner = _compute_owner(record.lead_id, record.decision, db_path)
-
-    con = sqlite3.connect(str(db_path))
+def _ensure_agent_decisions_schema(con: sqlite3.Connection) -> None:
+    """Crea la tabla si no existe y agrega columnas nuevas de forma idempotente."""
     con.execute("""
         CREATE TABLE IF NOT EXISTS agent_decisions (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -340,14 +352,44 @@ def registrar_decision(
             evidencia    TEXT,
             owner        TEXT    NOT NULL,
             razonamiento TEXT    NOT NULL,
+            run_id       TEXT,
             timestamp    TEXT    DEFAULT (datetime('now'))
         )
     """)
+    for col_def in ["motivo TEXT", "evidencia TEXT", "run_id TEXT"]:
+        try:
+            con.execute(f"ALTER TABLE agent_decisions ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # columna ya existe
+
+
+def registrar_decision(
+    lead_id: int,
+    decision: str,
+    razonamiento: str,
+    motivo: Optional[str] = None,
+    evidencia: Optional[str] = None,
+    run_id: Optional[str] = None,
+    db_path: Path = DB_PATH,
+) -> dict:
+    """
+    Valida con Pydantic, calcula el owner internamente y persiste en agent_decisions.
+    El LLM no pasa el owner ni el run_id; ambos son determinísticos/sistémicos.
+    """
+    record = _DecisionRecord(
+        lead_id=lead_id, decision=decision, razonamiento=razonamiento,
+        motivo=motivo, evidencia=evidencia,
+    )
+    owner = _compute_owner(record.lead_id, record.decision, db_path)
+
+    con = sqlite3.connect(str(db_path))
+    _ensure_agent_decisions_schema(con)
     cur = con.execute(
         "INSERT INTO agent_decisions "
-        "(lead_id, decision, motivo, evidencia, owner, razonamiento) VALUES (?,?,?,?,?,?)",
+        "(lead_id, decision, motivo, evidencia, owner, razonamiento, run_id) "
+        "VALUES (?,?,?,?,?,?,?)",
         (record.lead_id, record.decision, record.motivo, record.evidencia,
-         owner, record.razonamiento),
+         owner, record.razonamiento, run_id),
     )
     con.commit()
     decision_id = cur.lastrowid
@@ -410,12 +452,14 @@ _FN_MAP = {
     "calcular_score_icp": calcular_score_icp,
     "registrar_decision": registrar_decision,
 }
-_DB_TOOLS = {"buscar_duplicado", "enriquecer_empresa", "registrar_decision"}
+_DB_TOOLS = {"buscar_duplicado", "enriquecer_empresa", "calcular_score_icp", "registrar_decision"}
 
 
-def dispatch(name: str, args: dict, db_path: Path = DB_PATH) -> dict:
+def dispatch(name: str, args: dict, db_path: Path = DB_PATH, run_id: Optional[str] = None) -> dict:
     """Enruta una tool call del LLM a la función Python correspondiente."""
     fn = _FN_MAP[name]
-    if name in _DB_TOOLS:
-        return fn(**args, db_path=db_path)
-    return fn(**args)
+    if name not in _DB_TOOLS:
+        return fn(**args)
+    if name == "registrar_decision":
+        return fn(**args, db_path=db_path, run_id=run_id)
+    return fn(**args, db_path=db_path)

@@ -11,7 +11,6 @@ from pydantic import ValidationError
 
 from src.agent.loop import _check_consistency
 from src.agent.tools import (
-    asignar_owner,
     buscar_duplicado,
     calcular_score_icp,
     enriquecer_empresa,
@@ -91,60 +90,46 @@ class TestEnriquecerEmpresa:
 
 
 # ── calcular_score_icp ────────────────────────────────────────────────────────
+# La nueva firma toma lead_id y nombre_empresa; lee sector/pais/empleados/cargo
+# desde la DB de test. Ver conftest.py para los datos disponibles.
 
 class TestCalcularScoreICP:
-    def test_score_100_todas_dimensiones(self):
-        r = calcular_score_icp("mineria", "Chile", 1500, "Gerente General")
+    def test_score_100_todas_dimensiones(self, test_db):
+        # lead #1: Andina Minerales, Gerente General → mineria/Chile/1500 → 100
+        r = calcular_score_icp(1, "Andina Minerales S.A.", db_path=test_db)
         assert r["score"] == 100
         assert r["desglose"] == {"sector": 40, "pais": 20, "tamano": 20, "cargo": 20}
         assert r["criterio_excluyente"] is None
         assert r["cargo_excluyente"] is False
 
-    def test_criterio_excluyente_sector(self):
-        r = calcular_score_icp("retail", "Chile", 1500, "Gerente General")
+    def test_criterio_excluyente_sector(self, test_db):
+        # lead #4: Retail Andino → sector retail → criterio_excluyente
+        r = calcular_score_icp(4, "Retail Andino", db_path=test_db)
         assert r["criterio_excluyente"] == "sector"
 
-    def test_cargo_excluyente_estudiante(self):
-        r = calcular_score_icp("mineria", "Chile", 1500, "Estudiante")
+    def test_cargo_excluyente_practicante(self, test_db):
+        # lead #5: Andina Minerales, cargo=Practicante → cargo_excluyente
+        r = calcular_score_icp(5, "Andina Minerales S.A.", db_path=test_db)
         assert r["cargo_excluyente"] is True
         assert r["desglose"]["cargo"] == 0
 
-    def test_score_parcial_sin_tamano_sin_cargo(self):
-        # sector+pais OK, empresa pequeña, cargo no decisor
-        r = calcular_score_icp("mineria", "Chile", 50, "Analista Senior")
+    def test_score_parcial_sin_tamano_sin_cargo(self, test_db):
+        # lead #6: Mini Minera (50 emp < 200), Coordinador Técnico → sector+pais, sin tamano ni cargo
+        r = calcular_score_icp(6, "Mini Minera S.A.", db_path=test_db)
         assert r["score"] == 60
         assert r["desglose"]["tamano"] == 0
         assert r["desglose"]["cargo"] == 0
 
-    def test_coo_no_dispara_en_coordinador(self):
+    def test_coo_no_dispara_en_coordinador(self, test_db):
         # Regresión: "coo" no debe hacer substring match con "coordinador"
-        r = calcular_score_icp("mineria", "Chile", 1500, "Coordinador Técnico")
+        r = calcular_score_icp(6, "Mini Minera S.A.", db_path=test_db)
         assert r["desglose"]["cargo"] == 0
-        assert r["score"] == 80   # sector+pais+tamano, sin cargo
+        assert r["score"] == 60   # sector+pais, sin tamano ni cargo
 
-
-# ── asignar_owner ─────────────────────────────────────────────────────────────
-
-class TestAsignarOwner:
-    def test_calificado_chile(self):
-        r = asignar_owner("Chile", "calificado")
-        assert r["owner"] == "Ana Torres"
-
-    def test_calificado_peru(self):
-        r = asignar_owner("Peru", "calificado")
-        assert r["owner"] == "Luis Méndez"
-
-    def test_duplicado_usa_owner_existente(self):
-        r = asignar_owner("Chile", "duplicado", owner_existente="Luis Méndez")
-        assert r["owner"] == "Luis Méndez"
-
-    def test_descartado_sin_owner(self):
-        r = asignar_owner("Chile", "descartado")
-        assert r["owner"] == ""
-
-    def test_pais_sin_sdr_fallback(self):
-        r = asignar_owner("España", "calificado")
-        assert r["owner"] == "cola_revision"
+    def test_empresa_no_encontrada_devuelve_error(self, test_db):
+        # nombre_empresa que no existe → error dict sin excepción
+        r = calcular_score_icp(1, "Empresa Fantasma XYZ", db_path=test_db)
+        assert "error" in r
 
 
 # ── registrar_decision ────────────────────────────────────────────────────────
@@ -239,35 +224,78 @@ class TestConsistencyGuard:
         assert err is not None
         assert "40" in err
 
-    def test_rechaza_owner_incorrecto_en_revision(self):
-        # 'revision' debe tener owner='cola_revision', no un SDR
+    def test_rechaza_revision_sin_motivo(self):
+        # El LLM no pasa 'owner'; la guardia verifica que 'revision' lleve motivo
         state = _base_state()
-        args  = {"lead_id": 1, "decision": "revision", "owner": "Ana Torres", "razonamiento": "x"}
+        args  = {"lead_id": 1, "decision": "revision", "razonamiento": "x"}
         err   = _check_consistency(args, state)
         assert err is not None
-        assert "cola_revision" in err
+        assert "motivo" in err
 
-    def test_acepta_owner_correcto_en_revision(self):
+    def test_acepta_revision_con_motivo_empresa_desconocida(self):
+        # revision + empresa no encontrada + motivo correcto → aceptado
+        state = _base_state(
+            enriquecer_empresa_result={"encontrada": False, "nombre_encontrado": None},
+        )
+        args = {
+            "lead_id": 1, "decision": "revision", "razonamiento": "x",
+            "motivo": "empresa_desconocida",
+        }
+        err = _check_consistency(args, state)
+        assert err is None
+
+    def test_rechaza_calificado_con_criterio_excluyente(self):
+        # criterio_excluyente activo → la guardia rechaza 'calificado'
+        state = _base_state(
+            called_tools=["calcular_score_icp"],
+            score_result={"score": 80, "criterio_excluyente": "sector", "cargo_excluyente": False},
+        )
+        args = {"lead_id": 1, "decision": "calificado", "razonamiento": "x"}
+        err  = _check_consistency(args, state)
+        assert err is not None
+        assert "descartado" in err
+
+    def test_acepta_descartado(self):
+        # descartado sin restricciones adicionales → aceptado
         state = _base_state()
-        args  = {"lead_id": 1, "decision": "revision", "owner": "cola_revision", "razonamiento": "x"}
+        args  = {"lead_id": 1, "decision": "descartado", "razonamiento": "x"}
         err   = _check_consistency(args, state)
         assert err is None
 
-    def test_rechaza_owner_incorrecto_en_calificado(self):
-        # calificado en Chile → esperado "Ana Torres"; el modelo pone "Jorge Ramírez"
+    def test_rechaza_score_en_rango_revision_si_score_sobre_umbral(self):
+        # score >= UMBRAL_CALIFICADO (70) → el motivo correcto no es score_en_rango_revision
         state = _base_state(
-            called_tools=["calcular_score_icp", "enriquecer_empresa"],
-            score_result={"score": 100, "criterio_excluyente": None, "cargo_excluyente": False},
-            enriquecer_empresa_result={"encontrada": True, "pais": "Chile"},
+            called_tools=["calcular_score_icp"],
+            score_result={"score": 80, "criterio_excluyente": None, "cargo_excluyente": False},
         )
-        args = {"lead_id": 1, "decision": "calificado", "owner": "Jorge Ramírez", "razonamiento": "x"}
-        err  = _check_consistency(args, state)
+        args = {
+            "lead_id": 1, "decision": "revision", "owner": "cola_revision",
+            "razonamiento": "x", "motivo": "score_en_rango_revision",
+        }
+        err = _check_consistency(args, state)
         assert err is not None
-        assert "Ana Torres" in err
+        assert "calificado" in err
 
-    def test_rechaza_owner_no_vacio_en_descartado(self):
-        state = _base_state()
-        args  = {"lead_id": 1, "decision": "descartado", "owner": "Ana Torres", "razonamiento": "x"}
-        err   = _check_consistency(args, state)
+    def test_rechaza_empresa_desconocida_si_empresa_encontrada(self):
+        # enriquecer_empresa devolvió encontrada=True → motivo empresa_desconocida inválido
+        state = _base_state(
+            enriquecer_empresa_result={"encontrada": True, "nombre_encontrado": "Andina Minerales S.A."},
+        )
+        args = {
+            "lead_id": 1, "decision": "revision", "owner": "cola_revision",
+            "razonamiento": "x", "motivo": "empresa_desconocida",
+        }
+        err = _check_consistency(args, state)
         assert err is not None
-        assert "vacío" in err
+        assert "encontró" in err or "empresa_desconocida" in err
+
+    def test_rechaza_datos_contradictorios_sin_evidencia(self):
+        # datos_contradictorios sin campo evidencia → la guardia debe rechazarlo
+        state = _base_state()
+        args = {
+            "lead_id": 1, "decision": "revision", "owner": "cola_revision",
+            "razonamiento": "x", "motivo": "datos_contradictorios",
+        }
+        err = _check_consistency(args, state)
+        assert err is not None
+        assert "evidencia" in err

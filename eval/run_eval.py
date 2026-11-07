@@ -21,8 +21,8 @@ from pathlib import Path
 parser = argparse.ArgumentParser(description="Evalúa el agente de triage.")
 parser.add_argument("--set",   choices=["dev", "test"], required=True)
 parser.add_argument("--model", required=True, help="MODEL_ID para oMLX")
-parser.add_argument("--runs",  type=int, default=1,
-                    help="Número de ejecuciones para estabilidad (default: 1)")
+parser.add_argument("--runs",  type=int, default=3,
+                    help="Número de ejecuciones para estabilidad (default: 3)")
 args = parser.parse_args()
 
 # MODEL_ID debe setearse ANTES de importar loop (variable de módulo en import time)
@@ -55,12 +55,16 @@ con.close()
 
 DECISIONS = ["calificado", "revision", "descartado", "duplicado"]
 
+today      = date.today().isoformat()
+safe_model = args.model.replace("/", "-")
+
 
 # ── Función para evaluar un run ───────────────────────────────────────────────
 def run_once(run_num: int, total_runs: int) -> list[dict]:
     if total_runs > 1:
         print(f"\n── Run {run_num}/{total_runs} ──────────────────────────────────────")
 
+    run_id = f"{args.set}_{safe_model}_{today}_R{run_num}"
     records = []
     for i, lid in enumerate(lead_ids, 1):
         lead     = leads_db[lid]
@@ -70,16 +74,18 @@ def run_once(run_num: int, total_runs: int) -> list[dict]:
         print(f"{prefix} lead #{lid:<3}  {expected['case_type']:<25} … ", end="", flush=True)
 
         try:
-            trace     = run_agent(lead)
+            trace     = run_agent(lead, run_id=run_id)
             run_error = False
         except Exception as exc:
             trace = {
-                "decision":    "revision",
-                "owner":       "cola_revision",
+                "decision":     "revision",
+                "owner":        "cola_revision",
                 "razonamiento": f"ERROR en run_agent: {exc}",
-                "n_steps":     0,
-                "elapsed_s":   0.0,
-                "steps":       [],
+                "n_steps":      0,
+                "elapsed_s":    0.0,
+                "steps":        [],
+                "error_sistema": True,
+                "fallback_tipo": None,
             }
             run_error = True
 
@@ -91,34 +97,45 @@ def run_once(run_num: int, total_runs: int) -> list[dict]:
             and "Consistencia:" in str(tc.get("result", {}).get("error", ""))
         )
 
+        error_sistema = trace.get("error_sistema", False)
+        step_limit    = trace.get("fallback_tipo") == "step_limit"
+
         correct_decision = trace["decision"] == expected["decision"]
         correct_owner    = trace["owner"]     == expected["owner_esperado"]
         tipo_error = (
+            "error_sistema"  if error_sistema else
             "decision+owner" if not correct_decision and not correct_owner else
             "decision"       if not correct_decision else
             "owner"          if not correct_owner    else
             None
         )
 
-        mark = "✓" if tipo_error is None else ("✗d" if "decision" in tipo_error else "✗o")
-        print(f"{mark}  {trace['decision']:<12}  owner={trace['owner']!r:<18} ({trace['elapsed_s']:.1f}s)")
+        mark = (
+            "✗s" if error_sistema else
+            "✓"  if tipo_error is None else
+            ("✗d" if "decision" in tipo_error else "✗o")
+        )
+        print(f"{mark}  {trace['decision']:<14}  owner={trace['owner']!r:<18} ({trace['elapsed_s']:.1f}s)")
 
         records.append({
-            "run":               run_num,
-            "lead_id":           lid,
-            "case_type":         expected["case_type"],
-            "decision_gt":       expected["decision"],
-            "decision_agent":    trace["decision"],
-            "owner_gt":          expected["owner_esperado"],
-            "owner_agent":       trace["owner"],
-            "razonamiento":      trace["razonamiento"],
-            "n_steps":           trace["n_steps"],
-            "elapsed_s":         trace["elapsed_s"],
+            "run":                run_num,
+            "run_id":             run_id,
+            "lead_id":            lid,
+            "case_type":          expected["case_type"],
+            "decision_gt":        expected["decision"],
+            "decision_agent":     trace["decision"],
+            "owner_gt":           expected["owner_esperado"],
+            "owner_agent":        trace["owner"],
+            "razonamiento":       trace["razonamiento"],
+            "n_steps":            trace["n_steps"],
+            "elapsed_s":          trace["elapsed_s"],
             "consistency_blocks": consistency_blocks,
-            "correct_decision":  correct_decision,
-            "correct_owner":     correct_owner,
-            "tipo_error":        tipo_error,
-            "run_error":         run_error,
+            "correct_decision":   correct_decision,
+            "correct_owner":      correct_owner,
+            "tipo_error":         tipo_error,
+            "run_error":          run_error,
+            "error_sistema":      error_sistema,
+            "step_limit":         step_limit,
         })
     return records
 
@@ -145,6 +162,9 @@ def compute_metrics(records: list[dict]) -> dict:
     tot_lat   = sum(r["elapsed_s"] for r in records)
     errors    = [r for r in records if r["tipo_error"] is not None]
 
+    n_error_sistema = sum(r["error_sistema"] for r in records)
+    n_step_limit    = sum(r["step_limit"]    for r in records)
+
     return {
         "n":               n,
         "acc_decision":    n_correct / n,
@@ -158,6 +178,8 @@ def compute_metrics(records: list[dict]) -> dict:
         "avg_latency":     avg_lat,
         "total_elapsed":   tot_lat,
         "n_errors":        len(errors),
+        "n_error_sistema": n_error_sistema,
+        "n_step_limit":    n_step_limit,
         "tp": tp, "fp": fp, "fn": fn,
     }
 
@@ -212,8 +234,6 @@ def pct(num, den):
     return f"{100*num/den:.1f}%" if den else "—"
 
 
-today      = date.today().isoformat()
-safe_model = args.model.replace("/", "-")
 run_tag    = f"x{args.runs}" if args.runs > 1 else ""
 stem       = f"{args.set}_{safe_model}_{today}{run_tag}"
 report_path = RESULTS_DIR / f"{stem}.md"
@@ -236,6 +256,8 @@ md += [
     f"| Accuracy de owner | {fmt_agg('acc_owner', as_pct=True)} |",
     f"| Tasa de escalamiento (revision) | {fmt_agg('escalation_rate', as_pct=True)} |",
     f"| Guardia de consistencia activada | {fmt_agg('consistency', decimals=1)} |",
+    f"| Fallbacks por límite de pasos | {fmt_agg('n_step_limit', decimals=1)} |",
+    f"| Errores de sistema | {fmt_agg('n_error_sistema', decimals=1)} |",
     f"| Pasos promedio | {fmt_agg('avg_steps', decimals=2)} |",
     f"| Latencia promedio | {fmt_agg('avg_latency', decimals=1)} s/lead |",
     f"| Errores por run | {fmt_agg('n_errors', decimals=1)} |",

@@ -36,11 +36,17 @@ def test_db(tmp_path_factory):
         (1, "Juan Pérez",    "juan.perez@andinamineral.cl",   "Gerente General",  "Andina Minerales S.A.", "Chile", "Ana Torres"),
         (2, "María González","maria.gonzalez@solaraustral.cl","Directora Técnica","Solar Austral S.A.",    "Chile", "Ana Torres"),
     ])
-    # Leads inbound para tests de registrar_decision (owner calculado desde DB)
+    con.executemany("INSERT INTO companies VALUES (?,?,?,?,?,?)", [
+        (4, "Mini Minera S.A.", "mineria", "Chile", 50, "miniminera.cl"),
+    ])
+    # Leads inbound para tests de registrar_decision y calcular_score_icp
     con.executemany("INSERT INTO inbound_leads VALUES (?,?,?,?,?,?,?)", [
         (1, "Juan Pérez",    "juan.perez@andinamineral.cl",   "Gerente General",  "Andina Minerales S.A.", "Chile", "Whitepaper"),
         (2, "María González","maria.gonzalez@solaraustral.cl","Directora Técnica","Solar Austral S.A.",    "Chile", "Guía"),
         (3, "Pedro Ramírez", "pedro@empresa-desconocida.xyz", "Consultor",        "Corp Fantasma",         "México","Reporte"),
+        (4, "Carlos Retail", "carlos@retailandino.com",       "Gerente General",  "Retail Andino",         "Peru",  "X"),
+        (5, "Ana Prácticante","ana@andinamineral.cl",          "Practicante",      "Andina Minerales S.A.", "Chile", "X"),
+        (6, "Pedro Coord",   "pcoord@miniminera.cl",          "Coordinador Técnico","Mini Minera S.A.",    "Chile", "X"),
     ])
     con.commit()
     con.close()
