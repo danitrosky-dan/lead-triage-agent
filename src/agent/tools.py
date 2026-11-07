@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 from rapidfuzz import fuzz, process
 
 from .rules import (
@@ -228,78 +228,107 @@ CALCULAR_SCORE_ICP_SCHEMA = {
 }
 
 
-# ── 4. asignar_owner ─────────────────────────────────────────────────────────
+# ── 4. registrar_decision ────────────────────────────────────────────────────
+# asignar_owner eliminado como herramienta: el owner es determinístico y
+# registrar_decision lo calcula internamente desde la DB.
 
-def asignar_owner(
-    pais: str,
-    decision: str,
-    owner_existente: Optional[str] = None,
-) -> dict:
-    """Determina el SDR responsable según país y decisión."""
-    if decision == "duplicado":
-        return {
-            "owner": owner_existente or "",
-            "razon": "duplicado: se conserva el owner del contacto existente en CRM",
-        }
-    if decision == "descartado":
-        return {"owner": "", "razon": "descartado: sin asignación de SDR"}
+_MOTIVOS_REVISION = Literal[
+    "score_en_rango_revision",
+    "empresa_desconocida",
+    "datos_contradictorios",
+]
 
-    owner = ROUTING.get(pais, FALLBACK_OWNER)
-    razon = (
-        f"routing por país '{pais}' → {owner}"
-        if pais in ROUTING
-        else f"país '{pais}' sin SDR asignado → {FALLBACK_OWNER}"
-    )
-    return {"owner": owner, "razon": razon}
-
-
-ASIGNAR_OWNER_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "asignar_owner",
-        "description": (
-            "Determina el SDR responsable del lead según país y decisión. "
-            "Para duplicados devuelve el owner del contacto existente."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "pais":     {"type": "string", "description": "País del lead"},
-                "decision": {
-                    "type": "string",
-                    "enum": ["calificado", "revision", "descartado", "duplicado"],
-                },
-                "owner_existente": {
-                    "type": "string",
-                    "description": "Owner actual si el lead es duplicado (opcional)",
-                },
-            },
-            "required": ["pais", "decision"],
-        },
-    },
-}
-
-
-# ── 5. registrar_decision ────────────────────────────────────────────────────
 
 class _DecisionRecord(BaseModel):
     lead_id:      int
     decision:     Literal["calificado", "revision", "descartado", "duplicado"]
-    owner:        str
     razonamiento: str
+    motivo:       Optional[_MOTIVOS_REVISION] = None
+    evidencia:    Optional[str] = None   # requerido para datos_contradictorios
+
+    @model_validator(mode="after")
+    def _check_revision(self):
+        if self.decision == "revision":
+            if self.motivo is None:
+                raise ValueError(
+                    "decision='revision' requiere motivo. "
+                    "Valores: score_en_rango_revision | empresa_desconocida | datos_contradictorios"
+                )
+            if self.motivo == "datos_contradictorios" and not (self.evidencia or "").strip():
+                raise ValueError(
+                    "motivo='datos_contradictorios' requiere campo evidencia "
+                    "con los dos datos en conflicto."
+                )
+        return self
+
+
+def _compute_owner(lead_id: int, decision: str, db_path: Path) -> str:
+    """Owner determinístico: no es un parámetro del LLM, se calcula desde la DB."""
+    if decision == "revision":
+        return FALLBACK_OWNER
+    if decision == "descartado":
+        return ""
+
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        if decision == "duplicado":
+            row = con.execute(
+                "SELECT email FROM inbound_leads WHERE id=?", (lead_id,)
+            ).fetchone()
+            if row:
+                contact = con.execute(
+                    "SELECT owner FROM crm_contacts WHERE LOWER(email)=LOWER(?)",
+                    (row["email"],),
+                ).fetchone()
+                if contact:
+                    return contact["owner"]
+                # Fuzzy fallback para duplicados con typo en email
+                all_c = [dict(r) for r in con.execute("SELECT email, owner FROM crm_contacts")]
+                if all_c:
+                    result = process.extractOne(
+                        row["email"].lower(),
+                        [c["email"].lower() for c in all_c],
+                        scorer=fuzz.ratio,
+                    )
+                    if result and result[1] >= _FUZZY_EMAIL_THRESHOLD:
+                        return all_c[result[2]]["owner"]
+            return FALLBACK_OWNER
+
+        if decision == "calificado":
+            lead = con.execute(
+                "SELECT empresa FROM inbound_leads WHERE id=?", (lead_id,)
+            ).fetchone()
+            if lead:
+                company = con.execute(
+                    "SELECT pais FROM companies WHERE nombre=?", (lead["empresa"],)
+                ).fetchone()
+                if company:
+                    return ROUTING.get(company["pais"], FALLBACK_OWNER)
+            return FALLBACK_OWNER
+    finally:
+        con.close()
+
+    return FALLBACK_OWNER
 
 
 def registrar_decision(
     lead_id: int,
     decision: str,
-    owner: str,
     razonamiento: str,
+    motivo: Optional[str] = None,
+    evidencia: Optional[str] = None,
     db_path: Path = DB_PATH,
 ) -> dict:
-    """Valida con Pydantic y persiste la decisión del agente en agent_decisions."""
+    """
+    Valida con Pydantic, calcula el owner internamente y persiste en agent_decisions.
+    El LLM no pasa el owner; es determinístico según decisión + datos en DB.
+    """
     record = _DecisionRecord(
-        lead_id=lead_id, decision=decision, owner=owner, razonamiento=razonamiento
+        lead_id=lead_id, decision=decision, razonamiento=razonamiento,
+        motivo=motivo, evidencia=evidencia,
     )
+    owner = _compute_owner(record.lead_id, record.decision, db_path)
 
     con = sqlite3.connect(str(db_path))
     con.execute("""
@@ -307,19 +336,23 @@ def registrar_decision(
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             lead_id      INTEGER NOT NULL,
             decision     TEXT    NOT NULL,
+            motivo       TEXT,
+            evidencia    TEXT,
             owner        TEXT    NOT NULL,
             razonamiento TEXT    NOT NULL,
             timestamp    TEXT    DEFAULT (datetime('now'))
         )
     """)
     cur = con.execute(
-        "INSERT INTO agent_decisions (lead_id, decision, owner, razonamiento) VALUES (?,?,?,?)",
-        (record.lead_id, record.decision, record.owner, record.razonamiento),
+        "INSERT INTO agent_decisions "
+        "(lead_id, decision, motivo, evidencia, owner, razonamiento) VALUES (?,?,?,?,?,?)",
+        (record.lead_id, record.decision, record.motivo, record.evidencia,
+         owner, record.razonamiento),
     )
     con.commit()
     decision_id = cur.lastrowid
     con.close()
-    return {"ok": True, "decision_id": decision_id}
+    return {"ok": True, "decision_id": decision_id, "owner": owner}
 
 
 REGISTRAR_DECISION_SCHEMA = {
@@ -327,30 +360,36 @@ REGISTRAR_DECISION_SCHEMA = {
     "function": {
         "name": "registrar_decision",
         "description": (
-            "Registra la decisión final del agente con trazabilidad completa. "
-            "Llamar siempre al finalizar el triage de un lead."
+            "Registra la decisión final. El owner se calcula automáticamente. "
+            "Si la decisión es 'revision', indica el motivo. "
+            "Llamar siempre al finalizar el triage."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "lead_id":  {"type": "integer", "description": "ID del lead en inbound_leads"},
+                "lead_id":  {"type": "integer"},
                 "decision": {
                     "type": "string",
                     "enum": ["calificado", "revision", "descartado", "duplicado"],
                 },
-                "owner": {
-                    "type": "string",
-                    "description": "SDR asignado; vacío si descartado",
-                },
                 "razonamiento": {
                     "type": "string",
+                    "description": "Qué herramientas usó, qué encontró y por qué esta decisión",
+                },
+                "motivo": {
+                    "type": "string",
+                    "enum": ["score_en_rango_revision", "empresa_desconocida", "datos_contradictorios"],
+                    "description": "Requerido cuando decision='revision'",
+                },
+                "evidencia": {
+                    "type": "string",
                     "description": (
-                        "Explicación del agente: qué herramientas usó, qué encontró "
-                        "y por qué tomó esta decisión"
+                        "Requerido cuando motivo='datos_contradictorios'. "
+                        "Nombra los dos datos en conflicto, ej: 'email con dominio .cl pero país=México'."
                     ),
                 },
             },
-            "required": ["lead_id", "decision", "owner", "razonamiento"],
+            "required": ["lead_id", "decision", "razonamiento"],
         },
     },
 }
@@ -362,7 +401,6 @@ TOOLS_LIST = [
     BUSCAR_DUPLICADO_SCHEMA,
     ENRIQUECER_EMPRESA_SCHEMA,
     CALCULAR_SCORE_ICP_SCHEMA,
-    ASIGNAR_OWNER_SCHEMA,
     REGISTRAR_DECISION_SCHEMA,
 ]
 
@@ -370,7 +408,6 @@ _FN_MAP = {
     "buscar_duplicado":   buscar_duplicado,
     "enriquecer_empresa": enriquecer_empresa,
     "calcular_score_icp": calcular_score_icp,
-    "asignar_owner":      asignar_owner,
     "registrar_decision": registrar_decision,
 }
 _DB_TOOLS = {"buscar_duplicado", "enriquecer_empresa", "registrar_decision"}

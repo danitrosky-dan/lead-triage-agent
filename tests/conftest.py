@@ -36,6 +36,12 @@ def test_db(tmp_path_factory):
         (1, "Juan Pérez",    "juan.perez@andinamineral.cl",   "Gerente General",  "Andina Minerales S.A.", "Chile", "Ana Torres"),
         (2, "María González","maria.gonzalez@solaraustral.cl","Directora Técnica","Solar Austral S.A.",    "Chile", "Ana Torres"),
     ])
+    # Leads inbound para tests de registrar_decision (owner calculado desde DB)
+    con.executemany("INSERT INTO inbound_leads VALUES (?,?,?,?,?,?,?)", [
+        (1, "Juan Pérez",    "juan.perez@andinamineral.cl",   "Gerente General",  "Andina Minerales S.A.", "Chile", "Whitepaper"),
+        (2, "María González","maria.gonzalez@solaraustral.cl","Directora Técnica","Solar Austral S.A.",    "Chile", "Guía"),
+        (3, "Pedro Ramírez", "pedro@empresa-desconocida.xyz", "Consultor",        "Corp Fantasma",         "México","Reporte"),
+    ])
     con.commit()
     con.close()
     return db

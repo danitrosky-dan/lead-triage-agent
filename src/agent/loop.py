@@ -12,7 +12,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from .rules import UMBRAL_CALIFICADO
+from .rules import FALLBACK_OWNER, ROUTING, UMBRAL_CALIFICADO
 from .tools import DB_PATH, TOOLS_LIST, dispatch, registrar_decision
 
 # ── Configuración ─────────────────────────────────────────────────────────────
@@ -31,7 +31,9 @@ _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 _LOG_PATH = _ROOT / "logs" / "traces.jsonl"
 _LOG_PATH.parent.mkdir(exist_ok=True)
 
-MAX_STEPS = 8
+MAX_STEPS   = 8
+TEMPERATURE = 0.6
+TOP_P       = 0.95
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -51,42 +53,79 @@ def _format_lead(lead: dict) -> str:
 
 def _check_consistency(args: dict, run_state: dict) -> str | None:
     """
-    Valida que registrar_decision sea coherente con los resultados vistos en
-    esta ejecución. Devuelve un mensaje de error para el modelo, o None si OK.
+    Valida que registrar_decision sea coherente con los resultados de las
+    herramientas de esta ejecución. Devuelve error para el modelo, o None si OK.
     """
     decision = args.get("decision", "")
 
+    # ── calificado ────────────────────────────────────────────────────────────
     if decision == "calificado":
         if "calcular_score_icp" not in run_state["called_tools"]:
             return (
-                "Consistencia: debes llamar a calcular_score_icp antes de "
-                "registrar 'calificado'. Llama a esa herramienta primero."
+                "Consistencia: llama a calcular_score_icp antes de registrar 'calificado'."
             )
         sr = run_state.get("score_result")
         if sr:
             if sr.get("criterio_excluyente"):
                 return (
                     f"Consistencia: criterio excluyente '{sr['criterio_excluyente']}' "
-                    "activo — la decisión correcta es 'descartado', no 'calificado'."
+                    "→ la decisión correcta es 'descartado'."
                 )
             if sr.get("cargo_excluyente"):
-                return (
-                    "Consistencia: el cargo es excluyente — "
-                    "la decisión correcta es 'descartado', no 'calificado'."
-                )
+                return "Consistencia: cargo excluyente → la decisión correcta es 'descartado'."
             if sr["score"] < UMBRAL_CALIFICADO:
                 return (
-                    f"Consistencia: score ICP {sr['score']} < umbral {UMBRAL_CALIFICADO}. "
-                    "Usa 'revision' o 'descartado' según las reglas."
+                    f"Consistencia: score {sr['score']} < umbral {UMBRAL_CALIFICADO} "
+                    "→ usa 'revision' o 'descartado'."
                 )
 
-    if decision == "duplicado":
+    # ── duplicado ─────────────────────────────────────────────────────────────
+    elif decision == "duplicado":
         dr = run_state.get("buscar_duplicado_result")
         if not dr or not dr.get("es_duplicado"):
             return (
-                "Consistencia: buscar_duplicado no reportó duplicado en este lead. "
-                "No puedes registrar la decisión 'duplicado'."
+                "Consistencia: buscar_duplicado no reportó duplicado. "
+                "No puedes registrar 'duplicado'."
             )
+
+    # ── revision: motivo cerrado + verificación de los que se pueden comprobar ─
+    elif decision == "revision":
+        motivo = args.get("motivo")
+        if not motivo:
+            return (
+                "Consistencia: 'revision' requiere campo motivo. "
+                "Valores: score_en_rango_revision | empresa_desconocida | datos_contradictorios."
+            )
+
+        if motivo == "score_en_rango_revision":
+            sr = run_state.get("score_result")
+            if sr is not None:
+                s = sr["score"]
+                if s >= UMBRAL_CALIFICADO:
+                    return (
+                        f"Consistencia: motivo='score_en_rango_revision' pero score={s} "
+                        f"≥ {UMBRAL_CALIFICADO} → la decisión correcta es 'calificado'."
+                    )
+                if s < UMBRAL_REVISION:
+                    return (
+                        f"Consistencia: motivo='score_en_rango_revision' pero score={s} "
+                        f"< {UMBRAL_REVISION} → la decisión correcta es 'descartado'."
+                    )
+
+        elif motivo == "empresa_desconocida":
+            er = run_state.get("enriquecer_empresa_result")
+            if er and er.get("encontrada"):
+                return (
+                    f"Consistencia: motivo='empresa_desconocida' pero enriquecer_empresa "
+                    f"encontró '{er.get('nombre_encontrado')}'. Usa otro motivo."
+                )
+
+        elif motivo == "datos_contradictorios":
+            if not (args.get("evidencia") or "").strip():
+                return (
+                    "Consistencia: motivo='datos_contradictorios' requiere campo evidencia "
+                    "con los dos datos en conflicto."
+                )
 
     return None
 
@@ -114,12 +153,14 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
     ]
 
     run_state: dict = {
-        "called_tools":           [],   # nombres de tools ejecutadas con éxito
-        "buscar_duplicado_result": None,
-        "score_result":            None,
+        "called_tools":              [],   # nombres de tools ejecutadas con éxito
+        "buscar_duplicado_result":    None,
+        "enriquecer_empresa_result":  None,
+        "score_result":               None,
     }
-    steps:      list = []
-    final_args: dict | None = None
+    steps:       list = []
+    final_args:  dict | None = None
+    final_owner: str         = ""
 
     for step_n in range(1, MAX_STEPS + 1):
 
@@ -128,6 +169,8 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
             messages=messages,
             tools=TOOLS_LIST,
             tool_choice="auto",
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
         )
         msg = response.choices[0].message
 
@@ -208,10 +251,13 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
                 run_state["called_tools"].append(name)
                 if name == "buscar_duplicado":
                     run_state["buscar_duplicado_result"] = result
+                elif name == "enriquecer_empresa":
+                    run_state["enriquecer_empresa_result"] = result
                 elif name == "calcular_score_icp":
                     run_state["score_result"] = result
                 elif name == "registrar_decision":
-                    final_args = args   # guardia ya pasó → es coherente
+                    final_args  = args
+                    final_owner = result.get("owner", "")
 
         steps.append(step)
 
@@ -223,13 +269,14 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
         final_args = {
             "lead_id":      lead["id"],
             "decision":     "revision",
-            "owner":        "cola_revision",
+            "motivo":       "empresa_desconocida",
             "razonamiento": "Límite de pasos alcanzado sin decisión final.",
         }
         try:
-            registrar_decision(**final_args, db_path=db_path)
+            result = registrar_decision(**final_args, db_path=db_path)
+            final_owner = result.get("owner", FALLBACK_OWNER)
         except Exception:
-            pass  # best-effort
+            final_owner = FALLBACK_OWNER
 
     elapsed = round(time.time() - t0, 2)
 
@@ -238,7 +285,7 @@ def run_agent(lead: dict, db_path: Path = DB_PATH) -> dict:
         "ts":           datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "steps":        steps,
         "decision":     final_args["decision"],
-        "owner":        final_args["owner"],
+        "owner":        final_owner,
         "razonamiento": final_args["razonamiento"],
         "n_steps":      len(steps),
         "elapsed_s":    elapsed,

@@ -1,0 +1,2 @@
+lead_id,case_type,tipo_error,decision_esperada,decision_obtenida,owner_esperado,owner_obtenido,razonamiento_agente
+57,normal,decision+owner,calificado,revision,Ana Torres,cola_revision,"Score ICP 100 (mineria/Chile/2500empleados/Directora Op.), pero descargó Informe Mercado Eléctrico Colombia, generando inconsistencia entre perfil (Chile/minería) y contenido (Colombia/energía). Requiere verificación."

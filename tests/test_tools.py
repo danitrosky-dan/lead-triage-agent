@@ -1,5 +1,5 @@
 """
-Tests de las herramientas del agente.
+Tests de las herramientas del agente y de la guardia de consistencia del loop.
 Requiere: pytest, rapidfuzz, pydantic.
 Fixture test_db definida en conftest.py (SQLite en tmp_path).
 """
@@ -9,6 +9,7 @@ import sqlite3
 import pytest
 from pydantic import ValidationError
 
+from src.agent.loop import _check_consistency
 from src.agent.tools import (
     asignar_owner,
     buscar_duplicado,
@@ -149,26 +150,124 @@ class TestAsignarOwner:
 # ── registrar_decision ────────────────────────────────────────────────────────
 
 class TestRegistrarDecision:
-    def test_guarda_y_recupera(self, test_db):
+    def test_calificado_calcula_owner_por_pais(self, test_db):
+        # lead #1 → Andina Minerales S.A. → Chile → Ana Torres
         r = registrar_decision(
-            42, "calificado", "Ana Torres",
-            "Lead ICP: minería chilena, gerente general, 1500 empleados.",
+            1, "calificado",
+            "Score 100, minería Chile, gerente general.",
             db_path=test_db,
         )
         assert r["ok"] is True
-        assert isinstance(r["decision_id"], int)
+        assert r["owner"] == "Ana Torres"
 
-        con = sqlite3.connect(str(test_db))
-        row = con.execute(
-            "SELECT * FROM agent_decisions WHERE lead_id = 42"
-        ).fetchone()
-        con.close()
-        assert row is not None
-        assert row[2] == "calificado"   # columna decision
-        assert row[3] == "Ana Torres"   # columna owner
+    def test_revision_owner_es_cola_revision(self, test_db):
+        r = registrar_decision(
+            3, "revision",
+            "Empresa no encontrada en CRM.",
+            motivo="empresa_desconocida",
+            db_path=test_db,
+        )
+        assert r["ok"] is True
+        assert r["owner"] == "cola_revision"
+
+    def test_duplicado_calcula_owner_del_contacto(self, test_db):
+        # lead #1 tiene el mismo email que el contacto existente → owner Ana Torres
+        r = registrar_decision(
+            1, "duplicado",
+            "Email idéntico al contacto #1 en CRM.",
+            db_path=test_db,
+        )
+        assert r["ok"] is True
+        assert r["owner"] == "Ana Torres"
+
+    def test_descartado_owner_vacio(self, test_db):
+        r = registrar_decision(
+            1, "descartado",
+            "Sector agricultura, criterio excluyente activo.",
+            db_path=test_db,
+        )
+        assert r["ok"] is True
+        assert r["owner"] == ""
+
+    def test_revision_sin_motivo_lanza_error(self, test_db):
+        with pytest.raises(ValidationError):
+            registrar_decision(1, "revision", "sin motivo", db_path=test_db)
+
+    def test_datos_contradictorios_sin_evidencia_lanza_error(self, test_db):
+        with pytest.raises(ValidationError):
+            registrar_decision(
+                1, "revision", "contradicción",
+                motivo="datos_contradictorios",
+                db_path=test_db,
+            )
 
     def test_decision_invalida_lanza_validation_error(self, test_db):
         with pytest.raises(ValidationError):
-            registrar_decision(
-                1, "inventada", "Ana Torres", "test", db_path=test_db
-            )
+            registrar_decision(1, "inventada", "test", db_path=test_db)
+
+
+# ── Guardia de consistencia (_check_consistency) ─────────────────────────────
+
+def _base_state(**overrides):
+    """run_state mínimo con todos los campos que espera _check_consistency."""
+    state = {
+        "called_tools":             [],
+        "buscar_duplicado_result":  None,
+        "enriquecer_empresa_result": None,
+        "score_result":             None,
+    }
+    state.update(overrides)
+    return state
+
+
+class TestConsistencyGuard:
+
+    def test_rechaza_calificado_sin_calcular_score(self):
+        state = _base_state()
+        args  = {"lead_id": 1, "decision": "calificado", "owner": "Ana Torres", "razonamiento": "x"}
+        err   = _check_consistency(args, state)
+        assert err is not None
+        assert "calcular_score_icp" in err
+
+    def test_rechaza_calificado_score_bajo_umbral(self):
+        state = _base_state(
+            called_tools=["calcular_score_icp"],
+            score_result={"score": 40, "criterio_excluyente": None, "cargo_excluyente": False},
+        )
+        args = {"lead_id": 1, "decision": "calificado", "owner": "Ana Torres", "razonamiento": "x"}
+        err  = _check_consistency(args, state)
+        assert err is not None
+        assert "40" in err
+
+    def test_rechaza_owner_incorrecto_en_revision(self):
+        # 'revision' debe tener owner='cola_revision', no un SDR
+        state = _base_state()
+        args  = {"lead_id": 1, "decision": "revision", "owner": "Ana Torres", "razonamiento": "x"}
+        err   = _check_consistency(args, state)
+        assert err is not None
+        assert "cola_revision" in err
+
+    def test_acepta_owner_correcto_en_revision(self):
+        state = _base_state()
+        args  = {"lead_id": 1, "decision": "revision", "owner": "cola_revision", "razonamiento": "x"}
+        err   = _check_consistency(args, state)
+        assert err is None
+
+    def test_rechaza_owner_incorrecto_en_calificado(self):
+        # calificado en Chile → esperado "Ana Torres"; el modelo pone "Jorge Ramírez"
+        state = _base_state(
+            called_tools=["calcular_score_icp", "enriquecer_empresa"],
+            score_result={"score": 100, "criterio_excluyente": None, "cargo_excluyente": False},
+            enriquecer_empresa_result={"encontrada": True, "pais": "Chile"},
+        )
+        args = {"lead_id": 1, "decision": "calificado", "owner": "Jorge Ramírez", "razonamiento": "x"}
+        err  = _check_consistency(args, state)
+        assert err is not None
+        assert "Ana Torres" in err
+
+    def test_rechaza_owner_no_vacio_en_descartado(self):
+        state = _base_state()
+        args  = {"lead_id": 1, "decision": "descartado", "owner": "Ana Torres", "razonamiento": "x"}
+        err   = _check_consistency(args, state)
+        assert err is not None
+        assert "vacío" in err
