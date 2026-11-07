@@ -45,3 +45,9 @@ src/agent/ (loop, tools), data/, eval/, app/ (Streamlit)
 ## Comandos
 - Tests: pytest -v
 - Eval: python eval/run_eval.py --set dev|test --runs 3 --model <id>
+
+## Estado actual
+- v1 congelada en tag prompt-v1. Test (70 leads, 3 runs): 95,7% decisión,
+  97,1% owner, recall duplicados 100%. NO volver a correr test con v1.
+- Análisis de errores en docs/analisis_errores_test.md.
+- Próximo: corregir clasificación del análisis; luego decidir v2 / Fase 4 / cierre.
