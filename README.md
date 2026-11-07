@@ -6,7 +6,19 @@ Agente de IA que clasifica leads inbound B2B, asigna un SDR y redacta el primer 
 
 ## El problema
 
-[ESCRIBE AQUÍ]
+En mi experiencia liderando generación de demanda y equipos SDR en B2B, el
+inbound tiene un problema silencioso: los leads llegan rápido, pero se procesan
+lento. Antes de contactar a nadie, alguien tiene que revisar si el contacto ya
+existe en el CRM, si la empresa calza con el ICP y a qué SDR le corresponde.
+Ese trabajo manual retrasa la primera respuesta justo cuando el interés del
+lead está más alto.
+
+Los errores en esta etapa también cuestan: un duplicado no detectado termina
+con dos SDRs contactando a la misma cuenta, y un lead mal calificado consume
+tiempo comercial que debería ir a oportunidades reales.
+
+Este proyecto explora si un agente de IA puede hacer ese triage de forma
+confiable, y, sobre todo, cómo medir si lo hace bien.
 
 ---
 
@@ -230,7 +242,41 @@ La revisión humana de los borradores está disponible en la cola del dashboard 
 
 ## Lo que aprendí
 
-[ESCRIBE AQUÍ]
+## Lo que aprendí
+
+**1. La mayoría de los errores no fueron del modelo.** De los 9 errores en
+test, solo 1 fue un error de juicio del LLM. Cinco vinieron del orquestador
+(tratar una respuesta sin herramienta como fin del turno) y tres de una
+herramienta determinística (un umbral de similitud mal calibrado). Mejorar
+un agente es, en gran parte, mejorar el sistema que lo rodea.
+
+**2. El LLM orquesta; el código mueve los datos.** Cuando el modelo copiaba
+valores entre herramientas, reescribía "mineria" como "minería" y el score
+caía de 80 a 40. En otro caso inventó un SDR que no existía. La solución no
+fue un mejor prompt, sino quitarle esas tareas: las herramientas leen los
+datos directamente y el owner lo calcula el código.
+
+**3. Una evaluación tiene que distinguir "el modelo falló" de "el sistema
+falló".** Un error de base de datos hizo que el agente reintentara una
+decisión correcta hasta agotarse, y eso se registró como error del modelo.
+Más tarde, un typo en el nombre del modelo generó un 25,7% de accuracy
+falso: los leads que nunca se procesaron se contaban como aciertos por
+coincidencia.
+
+**4. Hay que validar todo, incluidos los validadores.** El ground truth
+tenía errores ("coo" coincidía con "coordinador"; las formas femeninas de
+los cargos no se reconocían). El validador de correos rechazaba el 100% de
+los borradores a la primera por un falso positivo. Ninguna pieza del sistema
+merece confianza ciega.
+
+**5. Separar dev y test cambia la historia.** En dev, el agente logró 100%;
+en test, 95,7%. Sin esa separación habría reportado un número inflado por mi
+propio ajuste del prompt.
+
+**6. Las reglas de negocio son el producto.** Las mejoras más importantes
+no fueron técnicas: definir criterios excluyentes del ICP, una lista cerrada
+de motivos de revisión y que los duplicados vuelvan a su owner existente.
+Ahí es donde la experiencia en RevOps importa más que el modelo.
 
 ---
 
