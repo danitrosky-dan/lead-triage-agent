@@ -7,7 +7,7 @@ icp:
                      vp, head,
                      jefe, jefa, jefes, jefas,
                      ceo, cfo, coo]
-  puntaje:
+  puntaje:          # ajusta los pesos
     sector: 40
     pais: 20
     tamano: 20
@@ -16,6 +16,7 @@ icp:
   umbral_revision: 50       # entre revision y calificado: escalar a humano
 
 routing:
+  # SDRs ficticios y su cobertura
   sdrs:
     - sdr: "Ana Torres"
       paises: [Chile, Argentina]
@@ -25,19 +26,19 @@ routing:
       paises: [Brasil]
     - sdr: "Jorge Ramírez"
       paises: [Mexico]
-  fallback: "cola_revision"
+  fallback: "cola_revision"  # país sin SDR asignado
 
 decisiones:
   duplicado: asignar_owner_existente    # no se recalifica ni reasigna
   empresa_desconocida: revision
   datos_contradictorios: revision
   owner_en_revision: cola_revision
-  criterios_excluyentes: [sector]       # si falla → descartado sin importar el score
+  criterios_excluyentes: [sector]       # si falla, descartado sin importar el score
   cargos_excluyentes: [estudiante, estudiantes,
                        practicante, practicantes,
                        proveedor, proveedora, proveedores, proveedoras,
                        alumno, alumna, alumnos, alumnas]
-  calificado_requiere_cargo_decisor: false
+  calificado_requiere_cargo_decisor: false     # true si eliges la opción (b)
 
 email:
   cta_duracion_minutos: 20
